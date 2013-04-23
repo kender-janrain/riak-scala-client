@@ -19,6 +19,7 @@ package internal
 
 import akka.actor._
 import spray.json.RootJsonReader
+import scala.util.{Failure, Success}
 
 private[riak] object RiakHttpClientHelper {
   import spray.http.HttpBody
@@ -212,9 +213,14 @@ private[riak] class RiakHttpClientHelper(system: ActorSystem) extends RiakUrlSup
     val etagHeader = value.etag.toOption.map(etag => RawHeader(`ETag`, etag))
     val lastModifiedHeader = lastModifiedFromDateTime(value.lastModified)
     val indexHeaders = value.indexes.map(toIndexHeader(_)).toList
+    val linkHeader = value.links.toList match {
+      case Nil   ⇒ None
+      case links ⇒ Some(RawHeader("Link", links.map(_.valueString).mkString(", ")))
+    }
 
     addOptionalHeader(vclockHeader) ~>
       addOptionalHeader(etagHeader) ~>
+      addOptionalHeader(linkHeader) ~>
       addHeader(lastModifiedHeader) ~>
       addHeaders(indexHeaders) ~>
       httpRequest
@@ -224,7 +230,6 @@ private[riak] class RiakHttpClientHelper(system: ActorSystem) extends RiakUrlSup
   // ==========================================================================
   // Response => RiakValue
   // ==========================================================================
-
   private def toRiakValue(response: HttpResponse): Option[RiakValue] = toRiakValue(response.entity, response.headers)
   private def toRiakValue(entity: HttpEntity, headers: List[HttpHeader]): Option[RiakValue] = {
     entity.toOption.flatMap { body =>
@@ -232,9 +237,15 @@ private[riak] class RiakHttpClientHelper(system: ActorSystem) extends RiakUrlSup
       val eTagOption         = headers.find(_.is("etag")).map(_.value)
       val lastModifiedOption = headers.find(_.is("last-modified")).map(h => dateTimeFromLastModified(h.asInstanceOf[`Last-Modified`]))
       val indexes            = toRiakIndexes(headers)
+      val links              = headers.find(_.is("link")).map { h ⇒
+        RiakLinkParser(h.value) match {
+          case Success(links) ⇒ links.toSet
+          case Failure(t) ⇒ throw new BucketOperationFailed(s"failed to parse riak link header: ${t.getMessage}")
+        }
+      }.getOrElse(Set.empty)
 
       for (vClock <- vClockOption; eTag <- eTagOption; lastModified <- lastModifiedOption)
-      yield RiakValue(body.asString, body.contentType, vClock, eTag, lastModified, indexes)
+      yield RiakValue(body.asString, body.contentType, vClock, eTag, lastModified, indexes, links)
     }
   }
 
