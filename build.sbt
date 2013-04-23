@@ -1,4 +1,4 @@
-name := "riak-scala-client"
+name := "riak-scala-client.janrain"
 
 version := "0.9-SNAPSHOT"
 
